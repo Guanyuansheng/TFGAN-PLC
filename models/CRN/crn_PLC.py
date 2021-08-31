@@ -96,9 +96,9 @@ class Decoder(nn.Module):
         return x
 
 
-class GCRN(nn.Module):
+class CRN(nn.Module):
     def __init__(self):
-        super(GCRN, self).__init__()
+        super(CRN, self).__init__()
         self.win_len = 320
         self.win_inc = 80
         self.fft_len = 320
@@ -150,7 +150,7 @@ if __name__ == '__main__':
     input: torch.Size([3, 1, 3200])
     output: torch.Size([3, 1, 3200])
     '''
-    model = GCRN()
+    model = CRN()
     x = torch.randn(1, 1, 3200)  # (B, channels, T).
     z = nn.init.uniform_(torch.Tensor(x.shape[0], 3200), -1., 1.)
     print(x.shape)
