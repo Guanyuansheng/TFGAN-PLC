@@ -12,35 +12,31 @@ from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from datasets import myDataset
-from models.unetgan.generator import Generator
-from models.unetgan.discriminator import Discriminator
+from models.tfgan.generator import Generator
+from models.tfgan.discriminator import Discriminator
 from models.stft_loss import MultiResolutionSTFTLoss
 from optimizsers import RAdam
-
-from pesq import pesq
 
 
 def get_pesq(ref, deg):
     return pesq(16000, ref, deg, 'nb')
 
-def pingjie(x, frame_size):
-    return torch.cat([item[:frame_size] for item in x.squeeze(1)], 0)
-
-def calEnergy(wave_data) :
-    energy = []
-    sum = 0
-    for i in range(wave_data.shape[1]):
-        sum = sum + wave_data[:, i] ** 2
-        if (i + 1) % 16 == 0:
-            energy.append(sum)
-            sum = 0
-        elif i == wave_data.shape[1] - 1:
-            energy.append(sum)
-    energy = torch.stack(energy, 1)
-    return energy
+def pingjie(inputs, frame_size, frame_shift):
+    nframes = inputs.shape[0]
+    sig_len = (nframes - 1) * frame_shift + frame_size
+    sig = torch.zeros([sig_len,]).cuda()
+    ones = torch.zeros_like(sig).cuda()
+    start = 0
+    end = start + frame_size
+    for i in range(nframes):
+        sig[start:end] += inputs[i, :].squeeze(0)
+        ones[start:end] += 1
+        start = start + frame_shift
+        end = start + frame_size
+    return sig / ones
 
 
-class gluGAN(pl.LightningModule):
+class TFGAN(pl.LightningModule):
 
     def __init__(self, hparams):
         super().__init__()
@@ -52,12 +48,12 @@ class gluGAN(pl.LightningModule):
         self.discriminator = Discriminator()
         # self.stft_mag = MultiSTFTMag()
 
-    def forward(self, z, noisy):
+    def forward(self, noisy):
         """
         Generates a speech using the generator
         given input noise z and noisy speech
         """
-        return self.generator(z, noisy)
+        return self.generator(noisy)
 
     def compute_gradient_penalty(self, real_samples, fake_samples):
         """Calculates the gradient penalty loss for RaLSGAN GP"""
@@ -85,9 +81,9 @@ class gluGAN(pl.LightningModule):
         noisy, clean, lens = batch
 
         # generate speechs
-        z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
-        z = z.type_as(noisy)
-        g_out = self.generator(z, noisy)
+        # z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
+        # z = z.type_as(noisy)
+        g_out = self.generator(noisy)
         # g_out_mags, clean_mags = self.stft_mag(g_out.squeeze(1), clean.squeeze(1))
 
         # make discriminator
@@ -96,11 +92,12 @@ class gluGAN(pl.LightningModule):
 
         # Summarize
         tensorboard = self.logger.experiment
-        if batch_idx % 50 == 0:
-            tensorboard.add_audio('inpainted speech', pingjie(g_out, 2560), batch_idx, 16000)
-            tensorboard.add_audio('uninpaint speech', pingjie(noisy, 2560), batch_idx, 16000)
-            tensorboard.add_audio('clean speech', pingjie(clean, 2560), batch_idx, 16000)
-            pesq = get_pesq(pingjie(clean, 2560).cpu().detach().numpy(), pingjie(g_out, 2560).cpu().detach().numpy())
+        if batch_idx % 200 == 0:
+            tensorboard.add_audio('inpainted speech', pingjie(g_out, self.hparams.slice_len, self.hparams.shift), batch_idx, 16000)
+            tensorboard.add_audio('uninpaint speech', pingjie(noisy, self.hparams.slice_len, self.hparams.shift), batch_idx, 16000)
+            tensorboard.add_audio('clean speech', pingjie(clean, self.hparams.slice_len, self.hparams.shift), batch_idx, 16000)
+            pesq = get_pesq(pingjie(clean, self.hparams.slice_len, self.hparams.shift).cpu().detach().numpy(),
+                            pingjie(g_out, self.hparams.slice_len, self.hparams.shift).cpu().detach().numpy())
             tensorboard.add_scalar('pesq', pesq, batch_idx)
             print(batch_idx, 'batch_idx pesq=', pesq)
 
@@ -110,44 +107,39 @@ class gluGAN(pl.LightningModule):
 
         # Train generator
         if optimizer_idx % 2 == 0:
-            g_loss = (torch.mean((real_logit + 1.) ** 2) + torch.mean((fake_logit - 1.) ** 2))/2
+            g_loss = (torch.mean((real_logit + 1.) ** 2) + torch.mean((fake_logit - 1.) ** 2)) / 2
             # l1_loss
             l1_loss = 100 * F.mse_loss(g_out, clean, reduction='mean')
             # stft_loss
             stft_loss = MultiResolutionSTFTLoss()
             g_stft = stft_loss(torch.squeeze(g_out, 1), torch.squeeze(clean, 1))
             g_loss = g_loss + l1_loss + 0.5 * g_stft
+            g_loss.requires_grad_(True)
 
-            output = {
-                'loss': g_loss,
-                'progress_bar': {'g_loss': g_loss},
-                'log': {'g_loss': g_loss}
-            }
             tensorboard.add_scalar('g_loss', g_loss, batch_idx)
-            return output
+            self.log('g_loss', g_loss, on_step=True, on_epoch=True, prog_bar=True)
+            return g_loss
 
         # train discriminator
         d_loss = (torch.mean((real_logit - 1.) ** 2) + torch.mean((fake_logit + 1.) ** 2))/2
+        d_loss.requires_grad_(True)
         # gradient_penalty = self.compute_gradient_penalty(clean, g_out)
-        # stft loss
-        # d_loss = d_loss + 0.1 * gradient_penalty
+        # energy loss
+        # d_loss = d_loss + gradient_penalty
 
-        output = {
-            'loss': d_loss,
-            'progress_bar': {'d_loss': d_loss},
-            'log': {'d_loss': d_loss}
-        }
         tensorboard.add_scalar('d_loss', d_loss, batch_idx)
-        return output
+        self.log('d_loss', d_loss, on_step=True, on_epoch=True, prog_bar=True)
+        return d_loss
 
     def validation_step(self, batch, batch_idx):
         noisy, clean, lens = batch
 
-        z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
-        z = z.type_as(noisy)
-        generated = self.forward(z, noisy)
+        # z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
+        # z = z.type_as(noisy)
+        generated = self.forward(noisy)
         l1_loss = 100 * torch.mean(torch.abs(clean - generated))
-        pesq = get_pesq(pingjie(clean, 2560).cpu().detach().numpy(), pingjie(generated, 2560).cpu().detach().numpy())
+        pesq = get_pesq(pingjie(clean, self.hparams.slice_len, self.hparams.shift).cpu().detach().numpy(),
+                        pingjie(generated, self.hparams.slice_len, self.hparams.shift).cpu().detach().numpy())
 
         output = {
             'loss': l1_loss,
@@ -158,21 +150,26 @@ class gluGAN(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         noisy, clean, lens = batch
 
-        z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
-        z = z.type_as(noisy)
-        test = self.forward(z, noisy)
+        # z = nn.init.uniform_(torch.Tensor(noisy.shape[0], 100), -1., 1.)
+        # z = z.type_as(noisy)
+        test = self.forward(noisy)
+
         save_path_clean = os.path.join(self.hparams.output_path, 'clean/test_audio_%d.wav' % batch_idx)
         save_path_test = os.path.join(self.hparams.output_path, 'inpainted/test_audio_%d.wav' % batch_idx)
+        save_path_noisy = os.path.join(self.hparams.output_path, 'noisy/test_audio_%d.wav' % batch_idx)
         print(save_path_test)
-        torchaudio.save(save_path_clean, pingjie(clean, 2560).cpu(), 16000)
-        torchaudio.save(save_path_test, pingjie(test, 2560).cpu(), 16000)
+        torchaudio.save(save_path_clean, pingjie(clean, self.hparams.slice_len, self.hparams.shift).cpu(), 16000)
+        torchaudio.save(save_path_test, pingjie(test, self.hparams.slice_len, self.hparams.shift).cpu(), 16000)
+        torchaudio.save(save_path_noisy, pingjie(noisy, self.hparams.slice_len, self.hparams.shift).cpu(), 16000)
+        # torchaudio.save(save_path_test, test, 16000)
         print('Successfully inpainted %d audios' % (batch_idx+1))
 
     def configure_optimizers(self):
         # REQUIRED
         # can return multiple optimizers and learning_rate schedulers
         optimizer_g = RAdam(self.generator.parameters(), lr=0.0001, betas=(0.5, 0.9))
-        optimizer_d = RAdam(self.discriminator.parameters(), lr=0.0001, betas=(0.5, 0.9))
+        optimizer_d = RAdam(self.discriminator.parameters(), lr=0.00005, betas=(0.5, 0.9))
+        # optimizer_stftd = RAdam(self.dc_discriminator.parameters(), lr=0.00005, betas=(0.5, 0.9))
 
         return [optimizer_g, optimizer_d], []
 
@@ -186,50 +183,50 @@ class gluGAN(pl.LightningModule):
     def train_dataloader(self):
         # REQUIRED
         return DataLoader(
-            myDataset(self.hparams.data_dir, self.hparams.slice_len, loss_rate='loss_10'),
-            batch_size=self.hparams.batch_size, collate_fn=self.collate_fn, shuffle=False, num_workers=0)
+            myDataset(self.hparams.data_dir, self.hparams.slice_len, loss_rate='loss_noisy'),
+            batch_size=self.hparams.batch_size, collate_fn=self.collate_fn, shuffle=False, num_workers=4)
 
     def val_dataloader(self):
         # OPTIONAL
         return DataLoader(
             myDataset(self.hparams.val_data_dir, self.hparams.slice_len, loss_rate='loss_10'),
-            batch_size=1, collate_fn=self.collate_fn, shuffle=False, num_workers=0)
+            batch_size=1, collate_fn=self.collate_fn, shuffle=False, num_workers=4)
 
     def test_dataloader(self):
         return DataLoader(
             myDataset(self.hparams.test_data_dir, self.hparams.slice_len, loss_rate='loss_10'),
-            batch_size=1, collate_fn=self.collate_fn, shuffle=False, num_workers=0)
+            batch_size=1, collate_fn=self.collate_fn, shuffle=False, num_workers=4)
 
 
 if __name__ == "__main__":
     # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     parser = ArgumentParser(add_help=False)
-    parser.add_argument('--mode', type=str, default='train')
+    parser.add_argument('--mode', type=str, default='test')
     parser.add_argument('--gpus', type=str, default=0)
     parser.add_argument('--batch_size', default=1, type=int)
-    parser.add_argument('--stride', default=2, type=int)
+    parser.add_argument('--shift', default=640, type=int)
     parser.add_argument('--slice_len', default=2560, type=int)
     # path
-    parser.add_argument('--data_dir', default='D:/pythonProject/dataset/VoiceBank/clean_trainset_56spk_wav_16k', type=str)
-    parser.add_argument('--val_data_dir', default='D:/pythonProject/dataset/VoiceBank/clean_trainset_56spk_wav_16k/validation', type=str)
+    parser.add_argument('--data_dir', default='/media/guanyuansheng/dataset/clean_trainset_56spk_wav_16k', type=str)
+    parser.add_argument('--val_data_dir', default='/media/guanyuansheng/dataset/clean_trainset_56spk_wav_16k/validation', type=str)
     parser.add_argument('--output_path', default='./outputs', type=str)
-    parser.add_argument('--test_data_dir', default='D:/pythonProject/dataset/VoiceBank/clean_trainset_56spk_wav_16k/test', type=str)
+    parser.add_argument('--test_data_dir', default='/media/guanyuansheng/dataset/clean_trainset_56spk_wav_16k/test', type=str)
     # parse params
     hparams = parser.parse_args()
 
-    model = gluGAN(hparams)
+    model = TFGAN(hparams)
 
     checkpoint_callback = ModelCheckpoint(filepath='./checkpoints', save_top_k=3, verbose=True,
-                                          monitor='loss', mode='min', prefix='loss')
+                                          monitor='pesq', mode='max', prefix='pesq')
 
     tb_logger = pl_loggers.TensorBoardLogger('./logs/')
     print('Training has started. Please use \'tensorboard --logdir=./logs\' to monitor.')
 
-    trainer = pl.Trainer(gpus='0', checkpoint_callback=checkpoint_callback,
-                        # resume_from_checkpoint='./checkpoints/unet+dilated/loss-epoch=52.ckpt',
+    trainer = pl.Trainer(gpus='3', checkpoint_callback=checkpoint_callback,
+                        resume_from_checkpoint='./checkpoints/pesq-epoch=103.ckpt',
                         progress_bar_refresh_rate=10,
-                        logger=tb_logger)
+                        logger=tb_logger, profiler=True)
 
     if hparams.mode == 'train':
         trainer.fit(model)
