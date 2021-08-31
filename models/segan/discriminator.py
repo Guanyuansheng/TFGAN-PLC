@@ -23,7 +23,6 @@ class Discriminator(nn.Module):
         self.conv7 = nn.Sequential(nn.Conv1d(128, 128, 11, 2, 5),
                                     nn.LeakyReLU(0.2))
         self.fully_connected = nn.Linear(in_features=2560, out_features=1)
-        self.fully_connected_e = nn.Linear(in_features=160, out_features=1)
 
     def forward(self, x):
         """
@@ -31,26 +30,17 @@ class Discriminator(nn.Module):
         Args:
             x: input batch (signal), size = [Bx1x2560]
         """
-        if x.shape[-1] == 2560:
-            x = self.conv1(x)   # [Bx16x1280]
-            x = self.conv2(x)   # [Bx32x640]
-            x = self.conv3(x)   # [Bx32x320]
-            x = self.conv4(x)   # [Bx64x160]
-            x = self.conv5(x)   # [Bx64x80]
-            x = self.conv6(x)   # [Bx128x40]
-            x = self.conv7(x)   # [Bx128x20]
-            # Flatten
-            x = x.view(-1, 2560)
-            x = self.fully_connected(x)
-        elif x.shape[-1] == 160:
-            x = self.conv1(x)  # [Bx16x80]
-            x = self.conv1_e(x)  # [Bx16x40]
-            x = self.conv2(x)  # [Bx32x20]
-            x = self.conv3(x)  # [Bx32x10]
-            x = self.conv3(x)  # [Bx32x5]
-            # Flatten
-            x = x.view(-1, 160)
-            x = self.fully_connected_e(x)
+        x = self.conv1(x)   # [Bx16x1280]
+        x = self.conv2(x)   # [Bx32x640]
+        x = self.conv3(x)   # [Bx32x320]
+        x = self.conv4(x)   # [Bx64x160]
+        x = self.conv5(x)   # [Bx64x80]
+        x = self.conv6(x)   # [Bx128x40]
+        x = self.conv7(x)   # [Bx128x20]
+        # Flatten
+        x = x.view(-1, 2560)
+        x = self.fully_connected(x)
+
         return x
 
 
@@ -61,7 +51,7 @@ if __name__ == '__main__':
     output: torch.Size([])
     '''
 
-    x = torch.randn(3, 1, 160)
+    x = torch.randn(3, 1, 2560)
     print(x.shape)
 
     out = model(x)
