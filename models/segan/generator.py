@@ -1,33 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-# from sru import SRU
 from ptflops.flops_counter import get_model_complexity_info
-
-class GLUBlock(torch.nn.Module):
-    def __init__(self, input_size, dila_rate=2):
-        super(GLUBlock, self).__init__()
-        self.in_conv = nn.Conv1d(input_size, input_size//2, 1)
-        self.dila_conv_left = nn.Sequential(nn.LeakyReLU(0.2, inplace=True),
-                                            nn.Conv1d(input_size//2, input_size//2, kernel_size=5, stride=1,
-                                                      padding=np.int(dila_rate * 2), dilation=dila_rate))
-        self.dila_conv_right = nn.Sequential(nn.LeakyReLU(0.2, inplace=True),
-                                             nn.Conv1d(input_size//2, input_size//2, kernel_size=5, stride=1,
-                                                       padding=np.int(dila_rate * 2), dilation=dila_rate),
-                                             nn.Sigmoid())
-        self.out_conv = nn.Conv1d(input_size//2, input_size, 1, dilation=dila_rate*2)
-        # self.out_lrelu = nn.LeakyReLU(0.2, inplace=True)
-
-    def forward(self, input):
-        x = input
-        x = self.in_conv(x)
-        x1 = self.dila_conv_left(x)
-        x2 = self.dila_conv_right(x)
-        x = x1 * x2
-        x = self.out_conv(x)
-        x = x + input
-        # x = self.out_lrelu(x)
-        return x
 
 
 class Generator(nn.Module):
@@ -147,8 +121,8 @@ class Generator(nn.Module):
 
 if __name__ == '__main__':
     '''
-    input: torch.Size([3, 1, 2560])
-    output: torch.Size([3, 1, 2560])
+    input: torch.Size([3, 1, 16384])
+    output: torch.Size([3, 1, 16384])
     '''
     model = Generator()
 
