@@ -205,7 +205,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='test')
     parser.add_argument('--gpus', type=str, default=0)
     parser.add_argument('--batch_size', default=1, type=int)
-    parser.add_argument('--shift', default=640, type=int)
+    parser.add_argument('--shift', default=2560, type=int)
     parser.add_argument('--slice_len', default=2560, type=int)
     # path
     parser.add_argument('--data_dir', default='/media/guanyuansheng/dataset/clean_trainset_56spk_wav_16k', type=str)
