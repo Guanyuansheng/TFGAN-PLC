@@ -4,6 +4,8 @@ import numpy as np
 from torch.autograd import Variable
 from ptflops.flops_counter import get_model_complexity_info
 
+
+# non-causal version
 class ConvBlock(torch.nn.Module):
     def __init__(self, input_channel, output_channel, kernel_size):
         super(ConvBlock, self).__init__()
